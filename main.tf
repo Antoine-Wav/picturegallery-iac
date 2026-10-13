@@ -1,45 +1,58 @@
-data "aws_caller_identity" "current" {}
+# VPC — our isolated virtual network
+resource "aws_vpc" "main" {
+  cidr_block           = var.vpc_cidr
+  enable_dns_support   = true
+  enable_dns_hostnames = true
 
-data "aws_ami" "amazon_linux_2023" {
-  most_recent = true
-  owners      = ["amazon"]
-
-  filter {
-    name   = "name"
-    values = ["al2023-ami-2023.*-x86_64"]
-  }
+  tags = merge(local.tags, { Name = local.vpc_name })
 }
 
-locals {
-  name_prefix     = "cse-sbx-${var.trigram}-${var.region_short}"
-  selected_ami_id = var.ec2_ami_id != "" ? var.ec2_ami_id : data.aws_ami.amazon_linux_2023.id
+# Internet Gateway — allows resources in the VPC to reach the internet
+resource "aws_internet_gateway" "main" {
+  vpc_id = aws_vpc.main.id
 
-  tags = merge(
-    {
-      Project     = var.project_tag
-      Environment = var.environment
-      Trainee     = var.trigram
-      ManagedBy   = "terraform"
-    },
-    var.common_tags
-  )
+  tags = merge(local.tags, { Name = local.internet_gw_name })
+}
 
-  # Resource names built from the naming convention
-  vpc_name                    = "${local.name_prefix}-vpc-main-01"
-  subnet_az1_name             = "${local.name_prefix}-subnet-public-01"
-  subnet_az2_name             = "${local.name_prefix}-subnet-public-02"
-  internet_gw_name            = "${local.name_prefix}-igw-main-01"
-  route_table_name            = "${local.name_prefix}-rt-public-01"
-  web_sg_name                 = "${local.name_prefix}-sg-web-01"
-  db_sg_name                  = "${local.name_prefix}-sg-db-01"
-  ec2_name                    = "${local.name_prefix}-ec2-app-01"
-  generated_ec2_key_pair_name = "${local.name_prefix}-keypair-app-01"
-  ec2_key_pair_name           = var.ec2_key_pair_name != "" ? var.ec2_key_pair_name : local.generated_ec2_key_pair_name
-  db_subnet_group             = "${local.name_prefix}-dbsubnet-main-01"
-  db_parameter_group          = "${local.name_prefix}-dbparam-mysql-01"
-  db_identifier               = "${local.name_prefix}-mysql-01"
-  logo_bucket_name            = lower("${local.name_prefix}-${var.logo_bucket_purpose}-${data.aws_caller_identity.current.account_id}")
-  logs_bucket_name            = lower("${local.name_prefix}-${var.logs_bucket_purpose}-${data.aws_caller_identity.current.account_id}")
+# Two public subnets in different Availability Zones (required by RDS)
+resource "aws_subnet" "public_az1" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = var.public_subnet_cidr_az1
+  availability_zone       = var.availability_zone_az1
+  map_public_ip_on_launch = true
+
+  tags = merge(local.tags, { Name = local.subnet_az1_name })
+}
+
+resource "aws_subnet" "public_az2" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = var.public_subnet_cidr_az2
+  availability_zone       = var.availability_zone_az2
+  map_public_ip_on_launch = true
+
+  tags = merge(local.tags, { Name = local.subnet_az2_name })
+}
+
+# Route table — sends all traffic to the internet gateway
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main.id
+  }
+
+  tags = merge(local.tags, { Name = local.route_table_name })
+}
+
+resource "aws_route_table_association" "public_az1" {
+  subnet_id      = aws_subnet.public_az1.id
+  route_table_id = aws_route_table.public.id
+}
+
+resource "aws_route_table_association" "public_az2" {
+  subnet_id      = aws_subnet.public_az2.id
+  route_table_id = aws_route_table.public.id
 }
 
 # Web security group — allows HTTP, HTTPS, and SSH from anywhere
